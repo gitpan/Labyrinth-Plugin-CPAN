@@ -3,7 +3,7 @@ package Labyrinth::Plugin::CPAN;
 use strict;
 use warnings;
 
-our $VERSION = '3.50';
+our $VERSION = '3.51';
 
 =head1 NAME
 
@@ -78,38 +78,43 @@ Given an operating system string, returns the values used in the system.
 
 sub DBX  {
     my ($self,$prefix,$autocommit) = @_;
+    $autocommit ||= 0;
 
-    if(defined $prefix) {
-        return $DBX{$prefix} if(defined $DBX{$prefix});
+    return                              unless(defined $prefix);
+    return $DBX{$prefix.$autocommit}    if(defined $DBX{$prefix.$autocommit});
 
-        my %hash = map {$_ => $settings{"${prefix}_$_"}} qw(dictionary driver database dbfile dbhost dbport dbuser dbpass);
-        $hash{$_} = $settings{$_}   for(qw(logfile phrasebook));
-        $hash{autocommit} = $autocommit if($autocommit);
+    my %hash = map {$_ => $settings{"${prefix}_$_"}} grep {$settings{"${prefix}_$_"}} qw(dictionary driver database dbfile dbhost dbport dbuser dbpass);
+    return  unless(%hash);
 
-        $DBX{$prefix} = Labyrinth::DBUtils->new(\%hash);
-        die "Unable to connect to '$prefix' database\n" unless($DBX{$prefix});
+    $hash{$_} = $settings{$_}   for(qw(logfile phrasebook));
+    $hash{autocommit} = $autocommit if($autocommit);
 
-        return $DBX{$prefix};
-    }
+    $DBX{$prefix.$autocommit} = Labyrinth::DBUtils->new(\%hash);
+    die "Unable to connect to '$prefix' database\n" unless($DBX{$prefix.$autocommit});
+
+    return $DBX{$prefix.$autocommit};
 }
 
 sub Configure {
     my $self = shift;
-    my $cfg = Config::IniFiles->new( -file => $settings{cpan_config} );
+    my $cfg;
+    
+    $cfg = Config::IniFiles->new( -file => $settings{cpan_config} )
+        if(-f $settings{cpan_config});
 
-    if($cfg->SectionExists('EXCEPTIONS')) {
+    if($cfg && $cfg->SectionExists('EXCEPTIONS')) {
         my @values = $cfg->val('EXCEPTIONS','LIST');
         $self->exceptions( join('|',@values) );
     }
 
-    if($cfg->SectionExists('IGNORE')) {
+    if($cfg && $cfg->SectionExists('IGNORE')) {
         my @values = $cfg->val('IGNORE','LIST');
         my %IGNORE;
         $IGNORE{$_} = 1  for(@values);
         $self->ignore( \%IGNORE );
     }
 
-    if($cfg->SectionExists('SYMLINKS')) {
+    if($cfg && $cfg->SectionExists('SYMLINKS')) {
         my %SYMLINKS;
         $SYMLINKS{$_} = $cfg->val('SYMLINKS',$_)  for($cfg->Parameters('SYMLINKS'));
         $self->symlinks( \%SYMLINKS );
@@ -132,11 +137,13 @@ sub Configure {
 
 sub GetTesterProfile {
     my ($self,$guid,$addr) = @_;
+    my @rows;
 
+    return  unless($guid);
     return $TESTERS{$guid}    if($TESTERS{$guid});
     
     # check report mapping
-    my @rows = $dbi->GetQuery('hash','GetTesterProfile',$guid);
+    @rows = $dbi->GetQuery('hash','GetTesterProfile',$guid);
 
     # check previous tester mapping
     if(!@rows && $addr) {
@@ -159,7 +166,7 @@ sub GetTesterProfile {
 }
 
 sub FindTester {
-    my $str = shift;
+    my ($self,$str) = @_;
 
     my ($addr)  = Email::Address->parse($str);
     return ('admin@cpantesters.org','CPAN Testers Admin',-1,0) unless($addr);
@@ -173,7 +180,7 @@ sub FindTester {
         my @user = $dbi->GetQuery('hash','GetUserByID',$rows[0]->{userid});
         $TESTER{$address}{userid}    = $user[0]->{userid};
         $TESTER{$address}{name}      = $user[0]->{realname};
-        $TESTER{$address}{addressid} = $user[0]->{addressid} || 0;
+        $TESTER{$address}{addressid} = $rows[0]->{addressid} || 0;
     }
 
     return ($address,$TESTER{$address}{name},$TESTER{$address}{userid},$TESTER{$address}{addressid});
@@ -181,14 +188,14 @@ sub FindTester {
 
 sub Rename {
     LogDebug("Rename: user=$tvars{user}{name}");
-    if($tvars{user}{name} =~ /pause:(\d+)/) {
+    if($tvars{user}{name} =~ /pause:(\w+)/) {
         $tvars{user}{author} = uc $1;
         $tvars{user}{fakename} = $tvars{user}{author};
         LogDebug("Rename: author=$tvars{user}{author}, fakename=$tvars{user}{fakename}");
     } elsif($tvars{user}{name} =~ /imposter:(\d+)/) {
         $tvars{user}{tester} = $1;
-        LogDebug("Rename: tester=$tvars{user}{tester}, fakename=$tvars{user}{fakename}");
         $tvars{user}{fakename} = UserName($tvars{user}{tester});
+        LogDebug("Rename: tester=$tvars{user}{tester}, fakename=$tvars{user}{fakename}");
     } elsif($tvars{user}{name} =~ /imposter:([A-Z]+)/i) {
         $tvars{user}{author}   = uc $1;
         $tvars{user}{fakename} = $tvars{user}{author};
@@ -198,6 +205,8 @@ sub Rename {
 
 sub OSName {
     my ($self,$name) = @_;
+    return  unless($name);
+
     my $code = lc $name;
     $code =~ s/[^\w]+//g;
     my $OSNAMES = $self->osnames;
@@ -251,7 +260,6 @@ sub mklist_perls {
     $self->perls(\@perls);
     return \@perls;
 }
-
 
 1;
 
